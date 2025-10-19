@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>GDD — Лови вафли</title>
+<style>
+  :root{
+    --bg:#ffeaa7;
+    --panel:#ffde59;
+    --accent:#222;
+  }
+  html,body{height:100%;margin:0;font-family:Inter, Arial, sans-serif;background:var(--bg);display:flex;align-items:center;justify-content:center;}
+  .wrap{width:960px;max-width:96vw;background:linear-gradient(180deg,var(--panel),#ffd94d);border-radius:12px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,0.12);border:4px solid rgba(0,0,0,0.06);}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:8px;}
+  h1{font-size:20px;margin:0;color:var(--accent);}
+  .controls{margin-left:auto;display:flex;gap:8px;align-items:center;}
+  button{background:var(--accent);color:#fff;border:0;padding:8px 12px;border-radius:8px;cursor:pointer;font-weight:600;}
+  button.secondary{background:transparent;color:var(--accent);border:2px solid rgba(0,0,0,0.08);}
+  .info{display:flex;gap:12px;align-items:center;font-weight:700;color:var(--accent);}
+  canvas{display:block;width:100%;height:540px;background:linear-gradient(0deg,#fff6d6 0%, #fff0b2 50%);border-radius:8px;border:4px solid rgba(0,0,0,0.06);box-shadow:inset 0 -20px 40px rgba(0,0,0,0.02);}
+  .footer{display:flex;justify-content:space-between;margin-top:8px;color:#333;font-size:13px;}
+  .hint{opacity:.8}
+  @media (max-width:600px){ canvas{height:420px} }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>GDD — Лови вафли (Catch the Waffles)</h1>
+      <div class="controls">
+        <div class="info">Счёт: <span id="score">0</span></div>
+        <div class="info">Жизни: <span id="lives">5</span></div>
+        <button id="startBtn">Старт</button>
+        <button id="resetBtn" class="secondary">Сброс</button>
+      </div>
+    </header>
+
+    <canvas id="game" width="900" height="540"></canvas>
+
+    <div class="footer">
+      <div class="hint">Управление: стрелки ← → / A D, или тач/мышь</div>
+      <div>Уровень: <span id="level">1</span></div>
+    </div>
+  </div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W = canvas.width, H = canvas.height;
+
+const scoreEl = document.getElementById('score');
+const livesEl = document.getElementById('lives');
+const levelEl = document.getElementById('level');
+const startBtn = document.getElementById('startBtn');
+const resetBtn = document.getElementById('resetBtn');
+
+let lastTime = 0;
+let running = false;
+
+let score = 0;
+let lives = 5;
+let level = 1;
+let spawnInterval = 1200 * 3; // уменьшено в 3 раза
+let conveyors = [];
+let waffles = [];
+let player;
+
+function rand(min,max){ return Math.random()*(max-min)+min; }
+
+class Conveyor {
+  constructor(x,y,w,speed,dir){
+    this.x = x; this.y = y; this.w = w; this.h = 26;
+    this.speed = speed / 3; // уменьшили скорость в 3 раза
+    this.dir = dir;
+    this.timer = 0;
+    this.dropTimer = 0;
+    this.dropDelay = rand(1000,2000)*3; // уменьшено время между вафлями
+    this.patternOffset = 0;
+  }
+  update(dt){
+    this.patternOffset += this.speed * dt/1000 * this.dir * 60;
+    this.dropTimer += dt;
+    if (this.dropTimer > this.dropDelay){
+      this.dropTimer = 0;
+      this.dropDelay = rand(800,1600)/Math.sqrt(level)*3; // уменьшено
+      if(Math.random() < 1/3) spawnWaffle(this.x + rand(6,this.w-12), this.y + this.h/2); // количество вафель уменьшено в 3 раза
+    }
+  }
+  draw(ctx){
+    ctx.save();
+    ctx.fillStyle = '#d6a442';
+    roundRect(ctx,this.x, this.y, this.w, this.h, 6, true,false);
+    ctx.fillStyle = '#b8862a';
+    const stripeW = 24;
+    const ofs = (this.patternOffset % stripeW);
+    for(let sx = this.x - stripeW; sx < this.x + this.w + stripeW; sx += stripeW){
+      ctx.fillRect(sx + ofs, this.y+2, stripeW/2, this.h-4);
+    }
+    ctx.strokeStyle = 'rgba(0,0,0,0.06)';
+    ctx.lineWidth = 2;
+    roundRect(ctx,this.x, this.y, this.w, this.h, 6, false,true);
+    ctx.restore();
+  }
+}
+
+class Waffle {
+  constructor(x,y){
+    this.x = x;
+    this.y = y;
+    this.r = 20 + rand(-4,4);
+    this.vy = rand(40,80)/3; // уменьшили скорость падения в 3 раза
+    this.vx = rand(-20,20)/3; // уменьшили скорость по x
+    this.caught = false;
+    this.rotation = rand(0,Math.PI*2);
+    this.rotSpeed = rand(-1,1)/3; // уменьшили вращение
+  }
+  update(dt){
+    if (this.caught) return;
+    this.vy += 250 * dt/1000 /3; // gravity уменьшена
+    this.x += this.vx * dt/1000;
+    this.y += this.vy * dt/1000;
+    this.rotation += this.rotSpeed * dt/1000;
+  }
+  draw(ctx){
+    ctx.save();
+    ctx.translate(this.x,this.y);
+    ctx.rotate(this.rotation);
+    drawWaffle(ctx, -this.r, -this.r, this.r*2, this.r*2);
+    ctx.restore();
+  }
+}
+
+class Player {
+  constructor(){
+    this.w = 160;
+    this.h = 110;
+    this.x = W/2 - this.w/2;
+    this.y = H - this.h - 8;
+    this.speed = 520;
+    this.vx = 0;
+    this.aimX = this.x + this.w/2;
+  }
+  update(dt){
+    const targetX = this.aimX - this.w/2;
+    this.x += (targetX - this.x) * Math.min(1, dt/120);
+    if (this.x < 8) this.x = 8;
+    if (this.x + this.w > W-8) this.x = W-8 - this.w;
+  }
+  draw(ctx){
+    ctx.save();
+    const cx = this.x + this.w/2;
+    const cy = this.y + 36;
+    ctx.fillStyle = '#fff3c8';
+    ctx.beginPath(); ctx.ellipse(cx, cy, 44, 52, 0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#111';
+    ctx.beginPath();
+    ctx.ellipse(cx-6, cy-20, 54, 22, -0.6, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#ffdca2';
+    ctx.beginPath(); ctx.ellipse(cx, cy, 38, 44, 0,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(cx-36, cy-6, 28, 22,);
+    ctx.strokeRect(cx+8, cy-6, 28, 22);
+    ctx.beginPath(); ctx.moveTo(cx-8, cy+3); ctx.lineTo(cx+8, cy+3); ctx.stroke();
+    ctx.fillStyle = '#111';
+    ctx.beginPath(); ctx.arc(cx-22, cy-1, 3,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx+22, cy-1, 3,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#222';
+    ctx.fillRect(cx-34, cy+28, 68, 12,);
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(cx-24, cy+34); ctx.quadraticCurveTo(cx, cy+38, cx+24, cy+34); ctx.stroke();
+    ctx.restore();
+    ctx.save();
+    ctx.fillStyle = '#111';
+    roundRect(ctx, this.x + 12, this.y + 72, this.w - 24, 28, 8, true, false);
+    ctx.fillStyle = '#ffdca2';
+    ctx.font = 'bold 28px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('GDD', this.x + this.w/2, this.y + 96);
+    ctx.restore();
+  }
+
+  mouthRect(){
+    const cx = this.x + this.w/2;
+    const cy = this.y + 36 + 28;
+    return {x: cx-34, y: cy, w: 68, h: 12};
+  }
+}
+
+function roundRect(ctx,x,y,w,h,r,fill,stroke){
+  if (typeof r === 'undefined') r=6;
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+  if (fill) ctx.fill();
+  if (stroke) ctx.stroke();
+}
+
+function drawWaffle(ctx,x,y,w,h){
+  ctx.fillStyle = '#e0a84c';
+  roundRect(ctx,x,y,w,h,8,true,false);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#c5862e';
+  const cols = 4;
+  const rows = 4;
+  const cellW = w/cols;
+  const cellH = h/rows;
+  for(let i=1;i<cols;i++){
+    ctx.beginPath(); ctx.moveTo(x + i*cellW, y+4); ctx.lineTo(x + i*cellW, y+h-4); ctx.stroke();
+  }
+  for(let j=1;j<rows;j++){
+    ctx.beginPath(); ctx.moveTo(x+4, y + j*cellH); ctx.lineTo(x+w-4, y + j*cellH); ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(0,0,0,0.06)';
+  ctx.lineWidth = 1.5;
+  roundRect(ctx,x,y,w,h,8,false,true);
+}
+
+function spawnWaffle(x,y){
+  waffles.push(new Waffle(x,y+10));
+}
+
+function resetGame(){
+  score = 0;
+  lives = 5;
+  level = 1;
+  spawnInterval = 1200 / 3;
+  waffles = [];
+  conveyors = [];
+  const top = 70;
+  conveyors.push(new Conveyor(36, top, W-72, 30 + rand(0,10), 1));
+  conveyors.push(new Conveyor(60, top+70, W-120, 18 + rand(0,14), -1));
+  conveyors.push(new Conveyor(36, top+140, W-72, 26 + rand(0,8), 1));
+  player = new Player();
+  updateHUD();
+}
+
+function updateHUD(){
+  scoreEl.textContent = score;
+  livesEl.textContent = lives;
+  levelEl.textContent = level;
+}
+
+let spawnAcc = 0;
+function gameLoop(ts){
+  if (!running) return;
+  const dt = Math.min(40, ts - lastTime);
+  lastTime = ts;
+
+  conveyors.forEach(c => c.update(dt));
+
+  spawnAcc += dt;
+  if (spawnAcc >= spawnInterval){
+    spawnAcc = 0;
+    const c = conveyors[Math.floor(Math.random()*conveyors.length)];
+    if(Math.random() < 1/3) spawnWaffle(c.x + rand(12,c.w-12), c.y + c.h/2 + 8);
+  }
+
+  for (let i = waffles.length-1; i>=0; i--){
+    const w = waffles[i];
+    w.update(dt);
+    const mr = player.mouthRect();
+    if (!w.caught && rectCircleCollide(mr, w.x, w.y, w.r*0.6)){
+      w.caught = true;
+      score += 1;
+      playBeep(440,0.06);
+      waffles.splice(i,1);
+      if (score % 10 === 0) levelUp();
+      continue;
+    }
+    if (w.y - w.r > H){
+      waffles.splice(i,1);
+      lives -= 1;
+      playBeep(180,0.12);
+      if (lives <= 0) {
+        endGame();
+        return;
+      }
+    }
+  }
+
+  player.update(dt);
+  render();
+  updateHUD();
+  requestAnimationFrame(gameLoop);
+}
+
+function rectCircleCollide(rect, cx, cy, radius){
+  const closestX = clamp(cx, rect.x, rect.x + rect.w);
+  const closestY = clamp(cy, rect.y, rect.y + rect.h);
+  const dx = cx - closestX;
+  const dy = cy - closestY;
+  return (dx*dx + dy*dy) <= radius*radius;
+}
+
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+function render(){
+  ctx.clearRect(0,0,W,H);
+  drawBackgroundWaffle(ctx);
+  conveyors.forEach(c => c.draw(ctx));
+  waffles.forEach(w => w.draw(ctx));
+  ctx.save();
+  ctx.fillStyle = '#f6d479';
+  ctx.fillRect(0, H-12, W, 12);
+  ctx.restore();
+  player.draw(ctx);
+}
+
+function drawBackgroundWaffle(ctx){
+  ctx.save();
+  ctx.fillStyle = '#fff4cf';
+  ctx.fillRect(0,0,W,H);
+  ctx.translate(0,0);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(210,160,70,0.12)';
+  const gap = 40;
+  for(let x = -gap; x < W+gap; x += gap){
+    ctx.beginPath();
+    ctx.moveTo(x + (Date.now()%1000)/30, 0);
+    ctx.lineTo(x + (Date.now()%1000)/30, H);
+    ctx.stroke();
+  }
+  for(let y = -gap; y < H+gap; y += gap){
+    ctx.beginPath();
+    ctx.moveTo(0, y + (Date.now()%1200)/40);
+    ctx.lineTo(W, y + (Date.now()%1200)/40);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function levelUp(){
+  level++;
+  spawnInterval = Math.max(140, spawnInterval * 0.88); // spawnInterval уже делится на 3
+  conveyors.forEach(c => c.speed *= 1.06);
+  playBeep(880,0.08);
+}
+
+function endGame(){
+  running = false;
+  startBtn.textContent = 'Старт';
+  alert(`Игра окончена! Счёт: ${score}`);
+}
+
+let keys = {};
+window.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; handleKeys(); });
+window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+function handleKeys(){
+  if (!player) return;
+  if (keys['arrowleft'] || keys['a']) player.aimX = player.x + player.w/2 - 120;
+  else if (keys['arrowright'] || keys['d']) player.aimX = player.x + player.w/2 + 120;
+}
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+  if (player) player.aimX = mx;
+});
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const t = e.touches[0];
+  const mx = (t.clientX - rect.left) * (canvas.width / rect.width);
+  if (player) player.aimX = mx;
+}, {passive:false});
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+  if (player) player.aimX = mx;
+});
+
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx = null;
+function ensureAudio(){ if (!audioCtx) audioCtx = new AudioCtx(); }
+function playBeep(freq,duration){
+  try{
+    ensureAudio();
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'sine';
+    o.frequency.value = freq;
+    o.connect(g);
+    g.connect(audioCtx.destination);
+    g.gain.setValueAtTime(0.0001,audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.15,audioCtx.currentTime + 0.01);
+    o.start();
+    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+    o.stop(audioCtx.currentTime + duration + 0.02);
+  }catch(e){}
+}
+
+function onResize(){
+  const rect = canvas.getBoundingClientRect();
+  W = canvas.width;
+  H = canvas.height;
+  if (player) player.y = H - player.h - 8;
+}
+window.addEventListener('resize', onResize);
+
+startBtn.addEventListener('click', ()=>{
+  if (!running){
+    running = true;
+    startBtn.textContent = 'Пауза';
+    lastTime = performance.now();
+    if (!player) resetGame();
+    requestAnimationFrame(gameLoop);
+  } else {
+    running = false;
+    startBtn.textContent = 'Старт';
+  }
+});
+resetBtn.addEventListener('click', ()=>{
+  running = false;
+  startBtn.textContent = 'Старт';
+  resetGame();
+  render();
+});
+
+resetGame();
+render();
+</script>
+</body>
+</html>
